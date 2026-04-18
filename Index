@@ -1,0 +1,150 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+
+# Set page configuration
+st.set_page_config(page_title="Retail Sales What-If Dashboard", layout="wide")
+
+st.title("📊 Retail Sales 'What-If' Forecasting Dashboard")
+st.markdown("Explore how external factors like **Temperature** might impact weekly sales projections.")
+
+# --- 1. DATA LOADING & PREPARATION ---
+@st.cache_data
+def load_data():
+    # Load the datasets
+    train = pd.read_csv('train.csv')
+    features = pd.read_csv('features.csv')
+    
+    # Merge train and features on Store, Date, and IsHoliday
+    df = pd.merge(train, features, on=['Store', 'Date', 'IsHoliday'], how='inner')
+    
+    # Convert Date to datetime and sort
+    df['Date'] = pd.to_datetime(df['Date'])
+    
+    # Aggregate sales by Date to simplify the dashboard view (Total Company Sales)
+    daily_sales = df.groupby('Date').agg({
+        'Weekly_Sales': 'sum',
+        'Temperature': 'mean' # Average temp across all stores
+    }).reset_index().sort_values('Date')
+    
+    return daily_sales
+
+with st.spinner("Loading and merging dataset..."):
+    df = load_data()
+
+# --- 2. SIDEBAR CONTROLS (WHAT-IF SCENARIOS) ---
+st.sidebar.header("🎛️ What-If Parameters")
+
+# Temperature Adjustment Slider
+temp_increase_pct = st.sidebar.slider(
+    "Temperature Change (%)", 
+    min_value=-20.0, 
+    max_value=20.0, 
+    value=0.0, 
+    step=1.0,
+    help="Adjust the baseline temperature by this percentage to see projected impacts."
+)
+
+# Base Forecast Uncertainty Slider
+uncertainty_margin = st.sidebar.slider(
+    "Forecast Uncertainty Margin (%)",
+    min_value=1.0,
+    max_value=15.0,
+    value=5.0,
+    step=1.0,
+    help="Defines the upper (Optimistic) and lower (Pessimistic) bounds."
+)
+
+# --- 3. SCENARIO CALCULATIONS ---
+# Let's assume a simplified hypothetical elasticity for demonstration:
+# e.g., Every 1% increase in average temperature yields a 0.15% change in sales.
+temp_elasticity = 0.15 
+sales_impact_multiplier = 1 + ((temp_increase_pct * temp_elasticity) / 100)
+
+# Create a projection dataframe (using the last 52 weeks of data as our "forecast" period baseline)
+forecast_df = df.tail(52).copy()
+
+# Most Likely: Baseline sales * the temperature impact multiplier
+forecast_df['Most_Likely'] = forecast_df['Weekly_Sales'] * sales_impact_multiplier
+
+# Optimistic: Most Likely + Uncertainty Margin
+forecast_df['Optimistic'] = forecast_df['Most_Likely'] * (1 + (uncertainty_margin / 100))
+
+# Pessimistic: Most Likely - Uncertainty Margin
+forecast_df['Pessimistic'] = forecast_df['Most_Likely'] * (1 - (uncertainty_margin / 100))
+
+# --- 4. METRICS SUMMARY ---
+st.subheader("Summary Metrics (Projected Period)")
+col1, col2, col3, col4 = st.columns(4)
+
+baseline_total = forecast_df['Weekly_Sales'].sum()
+likely_total = forecast_df['Most_Likely'].sum()
+optimistic_total = forecast_df['Optimistic'].sum()
+pessimistic_total = forecast_df['Pessimistic'].sum()
+
+col1.metric("Baseline Sales", f"${baseline_total:,.0f}")
+col2.metric("Most Likely (Adjusted)", f"${likely_total:,.0f}", f"{(likely_total - baseline_total) / baseline_total * 100:.2f}%")
+col3.metric("Optimistic Scenario", f"${optimistic_total:,.0f}")
+col4.metric("Pessimistic Scenario", f"${pessimistic_total:,.0f}")
+
+
+# --- 5. VISUALIZATIONS ---
+st.subheader("📈 Forecast Scenarios vs. Baseline")
+
+fig = go.Figure()
+
+# Plot Optimistic (Upper Bound)
+fig.add_trace(go.Scatter(
+    x=forecast_df['Date'], y=forecast_df['Optimistic'],
+    mode='lines',
+    line=dict(width=0),
+    name='Optimistic Bound',
+    showlegend=False
+))
+
+# Plot Pessimistic (Lower Bound - Fills to Optimistic)
+fig.add_trace(go.Scatter(
+    x=forecast_df['Date'], y=forecast_df['Pessimistic'],
+    mode='lines',
+    line=dict(width=0),
+    fillcolor='rgba(0, 176, 246, 0.2)',
+    fill='tonexty', # Fill area between Optimistic and Pessimistic
+    name='Scenario Range (Opt to Pess)'
+))
+
+# Plot Most Likely
+fig.add_trace(go.Scatter(
+    x=forecast_df['Date'], y=forecast_df['Most_Likely'],
+    mode='lines',
+    line=dict(color='rgb(0, 176, 246)', width=3),
+    name='Most Likely'
+))
+
+# Plot Original Baseline
+fig.add_trace(go.Scatter(
+    x=forecast_df['Date'], y=forecast_df['Weekly_Sales'],
+    mode='lines',
+    line=dict(color='rgb(128, 128, 128)', width=2, dash='dash'),
+    name='Original Baseline'
+))
+
+fig.update_layout(
+    xaxis_title="Date",
+    yaxis_title="Weekly Sales ($)",
+    hovermode="x unified",
+    template="plotly_white",
+    height=500
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# Data Table Expander
+with st.expander("View Raw Projected Data"):
+    st.dataframe(forecast_df[['Date', 'Temperature', 'Weekly_Sales', 'Pessimistic', 'Most_Likely', 'Optimistic']].style.format({
+        'Temperature': "{:.1f}",
+        'Weekly_Sales': "${:,.2f}",
+        'Pessimistic': "${:,.2f}",
+        'Most_Likely': "${:,.2f}",
+        'Optimistic': "${:,.2f}",
+    }))
